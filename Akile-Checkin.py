@@ -104,27 +104,13 @@ class AkileCheckin:
         """)
 
     def login(self):
-        self.browser.get("https://akile.ai/")
+        # 直接访问登录页面
+        self.browser.get("https://akile.ai/login")
         self.browser.maximize_window()
-
-        # 等待弹窗加载并尝试关闭
         time.sleep(2)
-        self._dismiss_dialogs()
 
-        try:
-            # 找到header右侧的登录按钮（未登录时显示"登录"，已登录时显示"控制台"）
-            login_button = WebDriverWait(self.browser, 10).until(
-                EC.element_to_be_clickable(
-                    (By.XPATH, '//div[contains(@class, "header-top-right")]//button[contains(text(), "登录")]')
-                )
-            )
-            # 使用 JS 点击，绕过 ElementClickInterceptedException
-            self.browser.execute_script("arguments[0].click();", login_button)
-        except TimeoutException as e:
-            print(f"登录按钮没有加载出来: {e}")
-            msg = f"登录按钮没有加载出来: {e}\n签到失败"
-            Notice.serverJ(self.push_key, "Akile签到", msg)
-            sys.exit(1)
+        # 关闭可能出现的弹窗
+        self._dismiss_dialogs()
 
         # 键入邮箱和密码
         try:
