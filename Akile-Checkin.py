@@ -82,35 +82,39 @@ class AkileCheckin:
 
         return None, None
 
-    def login(self):
-        self.browser.get("https://akile.ai/")
-        self.browser.maximize_window()
-
-        # 等待弹窗加载并尝试关闭
-        time.sleep(2)
+    def _dismiss_dialogs(self):
+        """关闭所有可能的弹窗和遮挡层"""
+        # 尝试点击关闭按钮
         try:
             close_btn = self.browser.find_element(
                 By.CSS_SELECTOR,
-                '.arco-modal-close-btn, .arco-modal-close, [class*="close"]',
+                '.arco-modal-close-btn, .arco-modal-close, [class*="close"], button:has-text("Close")',
             )
-            close_btn.click()
+            self.browser.execute_script("arguments[0].click();", close_btn)
             time.sleep(0.5)
         except Exception:
             pass
 
         # 强制移除所有可能的遮挡层
         self.browser.execute_script("""
-            document.querySelectorAll('.arco-modal-wrapper, .arco-modal-mask, .arco-modal').forEach(m => m.remove());
+            document.querySelectorAll(
+                '.arco-modal-wrapper, .arco-modal-mask, .arco-modal, .arco-modal-container'
+            ).forEach(m => m.remove());
             document.body.style.overflow = '';
         """)
 
+    def login(self):
+        self.browser.get("https://akile.ai/")
+        self.browser.maximize_window()
+
+        # 等待弹窗加载并尝试关闭
+        time.sleep(2)
+        self._dismiss_dialogs()
+
         try:
             login_button = WebDriverWait(self.browser, 10).until(
-                EC.presence_of_element_located(
-                    (
-                        By.XPATH,
-                        '//*[@id="app"]/div[1]/div[1]/div/div/div[2]/div/div[2]/button',
-                    )
+                EC.element_to_be_clickable(
+                    (By.CSS_SELECTOR, '#app .header-right button')
                 )
             )
             # 使用 JS 点击，绕过 ElementClickInterceptedException
@@ -125,13 +129,13 @@ class AkileCheckin:
         try:
             email_input = WebDriverWait(self.browser, 10).until(
                 EC.element_to_be_clickable(
-                    (By.XPATH, '//input[@placeholder="请输入邮箱"]')
+                    (By.CSS_SELECTOR, 'input[placeholder*="邮箱"]')
                 )
             )
             email_input.send_keys(self.email)
             password_input = WebDriverWait(self.browser, 10).until(
                 EC.element_to_be_clickable(
-                    (By.XPATH, '//input[@placeholder="请输入密码"]')
+                    (By.CSS_SELECTOR, 'input[placeholder*="密码"]')
                 )
             )
             password_input.send_keys(self.password)
@@ -145,10 +149,7 @@ class AkileCheckin:
         try:
             submit_button = WebDriverWait(self.browser, 10).until(
                 EC.element_to_be_clickable(
-                    (
-                        By.XPATH,
-                        '//*[@id="app"]/div[1]/div/div/div/div[1]/form/div[4]/div[1]/button',
-                    )
+                    (By.CSS_SELECTOR, 'form button[type="submit"], form .arco-btn-primary')
                 )
             )
             submit_button.click()
@@ -158,107 +159,65 @@ class AkileCheckin:
             Notice.serverJ(self.push_key, "Akile签到", msg)
             sys.exit(1)
 
+    def _get_ak_coins(self):
+        """获取当前AK币数量"""
+        try:
+            element = self.browser.find_element(By.CSS_SELECTOR, '.coin-balance-value')
+            text = element.text.strip()
+            return int(re.search(r'(\d+)', text).group(1))
+        except Exception:
+            return -1
+
     # 签到主逻辑
     def check_in(self):
         checkin_page = "https://akile.ai/console/ak-coin-shop"
         self.browser.get(checkin_page)
-        time.sleep(2)
+        time.sleep(3)
 
         # 关闭可能出现的弹窗
-        try:
-            close_btn = self.browser.find_element(
-                By.CSS_SELECTOR,
-                '.arco-modal-close-btn, .arco-modal-close, [class*="close"]',
-            )
-            close_btn.click()
-            time.sleep(0.5)
-        except Exception:
-            pass
+        self._dismiss_dialogs()
 
-        # 强制移除所有可能的遮挡层
-        self.browser.execute_script("""
-            document.querySelectorAll('.arco-modal-wrapper, .arco-modal-mask, .arco-modal').forEach(m => m.remove());
-            document.body.style.overflow = '';
-        """)
+        # 签到前的积分
+        prev_points_num = self._get_ak_coins()
 
-        # 签到前的积分（对于已签到过的用户这个积分就是签到后的积分）
-        try:
-            prev_points = (
-                WebDriverWait(self.browser, 10)
-                .until(
-                    EC.visibility_of_element_located(
-                        (
-                            By.XPATH,
-                            '//*[@id="app"]/div[1]/div[2]/div[2]/div/div[1]/div/div/div[2]',
-                        )
-                    )
-                )
-                .text
-            )
-            prev_points_num = int(prev_points.split("AK币")[0].strip())
-        except TimeoutException:
-            prev_points_num = -1
+        # 签到按钮选择器
+        checkin_btn_selector = 'button:has-text("每日签到"), button:has-text("签到"):not(:has-text("已签到"))'
+        checked_btn_selector = 'button:has-text("今日已签到"), button[disabled]:has-text("已签到")'
 
-        # 签到
+        # 尝试签到
         try:
             checkin_button = WebDriverWait(self.browser, 10).until(
                 EC.element_to_be_clickable(
-                    (
-                        By.XPATH,
-                        '//*[@id="app"]/div[1]/div[2]/div[2]/div/div[1]/div/div/div[2]/button',
-                    )
+                    (By.XPATH, '//button[contains(text(), "每日签到") or (contains(text(), "签到") and not(contains(text(), "已签到")))]')
                 )
             )
             self.browser.execute_script("arguments[0].click();", checkin_button)
             time.sleep(3)  # 防止点击签到动作未发出
 
-            try:
-                cur_points = (
-                    WebDriverWait(self.browser, 10)
-                    .until(
-                        EC.visibility_of_element_located(
-                            (
-                                By.XPATH,
-                                '//*[@id="app"]/div[1]/div[2]/div[2]/div/div[1]/div/div/div[2]',
-                            )
-                        )
-                    )
-                    .text
-                )
-                cur_points_num = int(cur_points.split("AK币")[0].strip())
+            # 检查签到结果
+            cur_points_num = self._get_ak_coins()
 
-                if prev_points_num == -1:
-                    msg = f"签到成功, 当前有{cur_points_num}个AK币"
-                else:
-                    gain = cur_points_num - prev_points_num
-                    msg = f"签到成功, 获得{gain}个AK币, 当前有{cur_points_num}个AK币"
+            if prev_points_num == -1:
+                msg = f"签到成功, 当前有{cur_points_num}个AK币"
+            else:
+                gain = cur_points_num - prev_points_num if cur_points_num > 0 else 0
+                msg = f"签到成功, 获得{gain}个AK币, 当前有{cur_points_num}个AK币"
 
-                print(msg)
-                Notice.serverJ(self.push_key, "Akile签到", msg)
-
-            except TimeoutException:
-                msg = "签到成功, 但是无法获取当前AK币数量"
-                print(msg)
-                Notice.serverJ(self.push_key, "Akile签到", msg)
-            finally:
-                sys.exit(0)
+            print(msg)
+            Notice.serverJ(self.push_key, "Akile签到", msg)
+            sys.exit(0)
 
         except TimeoutException:
             # 签到按钮没有加载出来，检查是否已经签到过
             try:
-                WebDriverWait(self.browser, 10).until(
-                    EC.presence_of_element_located(
-                        (
-                            By.XPATH,
-                            '//*[@id="app"]/div[1]/div[2]/div[2]/div/div[1]/div/div/div[2]/button',
-                        )
-                    )
+                self.browser.find_element(
+                    By.XPATH, '//button[contains(text(), "已签到")]'
                 )
                 msg = f"今日已签到, 现在有{prev_points_num}AK币"
                 print(msg)
                 Notice.serverJ(self.push_key, "Akile签到", msg)
                 sys.exit(0)
-            except TimeoutException:
+            except Exception:
                 msg = "签到按钮和已签到按钮都无法加载出来, 可能是网络原因, 可以等待一会再执行脚本"
                 print(msg)
                 Notice.serverJ(self.push_key, "Akile签到", msg)
