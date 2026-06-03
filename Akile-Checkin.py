@@ -88,7 +88,7 @@ class AkileCheckin:
         try:
             close_btn = self.browser.find_element(
                 By.CSS_SELECTOR,
-                '.arco-modal-close-btn, .arco-modal-close, [class*="close"], button:has-text("Close")',
+                '.arco-modal-close-btn, .arco-modal-close, [class*="close"]',
             )
             self.browser.execute_script("arguments[0].click();", close_btn)
             time.sleep(0.5)
@@ -112,9 +112,10 @@ class AkileCheckin:
         self._dismiss_dialogs()
 
         try:
+            # 找到header右侧的登录按钮（未登录时显示"登录"，已登录时显示"控制台"）
             login_button = WebDriverWait(self.browser, 10).until(
                 EC.element_to_be_clickable(
-                    (By.CSS_SELECTOR, '#app .header-right button')
+                    (By.XPATH, '//div[contains(@class, "header-top-right")]//button[contains(text(), "登录")]')
                 )
             )
             # 使用 JS 点击，绕过 ElementClickInterceptedException
