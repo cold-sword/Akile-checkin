@@ -159,25 +159,24 @@ class AkileCheckin:
     def check_in(self):
         checkin_page = "https://akile.ai/console/ak-coin-shop"
         self.browser.get(checkin_page)
-        time.sleep(3)
+        time.sleep(5)  # 增加等待时间
 
         # 关闭可能出现的弹窗
         self._dismiss_dialogs()
 
         # 签到前的积分
         prev_points_num = self._get_ak_coins()
+        print(f"当前AK币: {prev_points_num}")
 
-        # 签到按钮选择器
-        checkin_btn_selector = 'button:has-text("每日签到"), button:has-text("签到"):not(:has-text("已签到"))'
-        checked_btn_selector = 'button:has-text("今日已签到"), button[disabled]:has-text("已签到")'
-
-        # 尝试签到
+        # 尝试签到 - 使用更简单的选择器
         try:
-            checkin_button = WebDriverWait(self.browser, 10).until(
+            # 等待页面加载完成
+            checkin_button = WebDriverWait(self.browser, 15).until(
                 EC.element_to_be_clickable(
-                    (By.XPATH, '//button[contains(text(), "每日签到") or (contains(text(), "签到") and not(contains(text(), "已签到")))]')
+                    (By.XPATH, '//button[contains(., "每日签到")]')
                 )
             )
+            print("找到签到按钮，正在点击...")
             self.browser.execute_script("arguments[0].click();", checkin_button)
             time.sleep(3)  # 防止点击签到动作未发出
 
@@ -195,16 +194,20 @@ class AkileCheckin:
             sys.exit(0)
 
         except TimeoutException:
+            print("未找到签到按钮，检查是否已签到...")
             # 签到按钮没有加载出来，检查是否已经签到过
             try:
                 self.browser.find_element(
-                    By.XPATH, '//button[contains(text(), "已签到")]'
+                    By.XPATH, '//button[contains(., "已签到")]'
                 )
                 msg = f"今日已签到, 现在有{prev_points_num}AK币"
                 print(msg)
                 Notice.serverJ(self.push_key, "Akile签到", msg)
                 sys.exit(0)
-            except Exception:
+            except Exception as e:
+                print(f"查找已签到按钮失败: {e}")
+                # 保存截图用于调试
+                self.browser.save_screenshot("debug.png")
                 msg = "签到按钮和已签到按钮都无法加载出来, 可能是网络原因, 可以等待一会再执行脚本"
                 print(msg)
                 Notice.serverJ(self.push_key, "Akile签到", msg)
