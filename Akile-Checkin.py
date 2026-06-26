@@ -1,4 +1,5 @@
 import configparser
+import json
 import os
 import re
 import shutil
@@ -14,216 +15,242 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 
-class AkileCheckin:
-    def __init__(self):
-        self.browser = None
+def get_chrome_info():
+    candidates = [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium-browser",
+        "chromium",
+    ]
 
-        # 优先读取环境变量（便于在 GitHub Actions 中直接运行）
-        self.email = os.getenv("AKILE_EMAIL", "").strip()
-        self.password = os.getenv("AKILE_PASSWORD", "").strip()
-        self.push_key = os.getenv("AKILE_PUSH_KEY", "").strip()
+    for binary in candidates:
+        binary_path = shutil.which(binary)
+        if not binary_path:
+            continue
 
-        # 若环境变量未配置则回退到配置文件
-        if not self.email or not self.password:
-            config = configparser.ConfigParser()
-            config.read("config.ini", encoding="utf-8")
-            self.email = self.email or config.get("akile", "email")
-            self.password = self.password or config.get("akile", "password")
-            self.push_key = self.push_key or config.get(
-                "akile", "push_key", fallback=""
-            )
+        try:
+            output = subprocess.check_output(
+                [binary_path, "--version"], stderr=subprocess.STDOUT, text=True
+            ).strip()
+            match = re.search(r"(\d+)\.", output)
+            if match:
+                return binary_path, int(match.group(1))
+        except Exception:
+            continue
 
-        options = uc.ChromeOptions()
-        options.add_argument("--lang=zh-CN")
-        options.add_experimental_option("prefs", {"intl.accept_languages": "zh-CN,zh"})
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument(
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+    return None, None
+
+
+def build_chrome_options():
+    options = uc.ChromeOptions()
+    options.add_argument("--lang=zh-CN")
+    options.add_experimental_option("prefs", {"intl.accept_languages": "zh-CN,zh"})
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+    )
+    return options
+
+
+def dismiss_dialogs(browser):
+    """关闭所有可能的弹窗和遮挡层"""
+    try:
+        close_btn = browser.find_element(
+            By.CSS_SELECTOR,
+            '.arco-modal-close-btn, .arco-modal-close, [class*="close"]',
         )
+        browser.execute_script("arguments[0].click();", close_btn)
+        time.sleep(0.5)
+    except Exception:
+        pass
 
-        # 在 CI 中显式指定 Chrome 二进制与主版本，避免多版本并存导致的版本错配
-        chrome_path, chrome_major = self._get_chrome_info()
+    browser.execute_script("""
+        document.querySelectorAll(
+            '.arco-modal-wrapper, .arco-modal-mask, .arco-modal, .arco-modal-container'
+        ).forEach(m => m.remove());
+        document.body.style.overflow = '';
+    """)
+
+
+def get_ak_coins(browser):
+    """获取当前AK币数量"""
+    try:
+        element = browser.find_element(By.CSS_SELECTOR, '.coin-balance-value')
+        text = element.text.strip()
+        return int(re.search(r'(\d+)', text).group(1))
+    except Exception:
+        return -1
+
+
+def run_single_account(email, password, push_key=""):
+    """对单个账号执行登录和签到，返回结果消息"""
+    result_msg = ""
+    browser = None
+
+    try:
+        options = build_chrome_options()
+        chrome_path, chrome_major = get_chrome_info()
         if chrome_path:
             options.binary_location = chrome_path
-            print(f"Using Chrome binary: {chrome_path} (major={chrome_major})")
-
         if chrome_major:
-            self.browser = uc.Chrome(options=options, version_main=chrome_major)
+            browser = uc.Chrome(options=options, version_main=chrome_major)
         else:
-            self.browser = uc.Chrome(options=options)
+            browser = uc.Chrome(options=options)
 
-    @staticmethod
-    def _get_chrome_info():
-        candidates = [
-            "google-chrome",
-            "google-chrome-stable",
-            "chromium-browser",
-            "chromium",
-        ]
-
-        for binary in candidates:
-            binary_path = shutil.which(binary)
-            if not binary_path:
-                continue
-
-            try:
-                output = subprocess.check_output(
-                    [binary_path, "--version"], stderr=subprocess.STDOUT, text=True
-                ).strip()
-                match = re.search(r"(\d+)\.", output)
-                if match:
-                    return binary_path, int(match.group(1))
-            except Exception:
-                continue
-
-        return None, None
-
-    def _dismiss_dialogs(self):
-        """关闭所有可能的弹窗和遮挡层"""
-        # 尝试点击关闭按钮
-        try:
-            close_btn = self.browser.find_element(
-                By.CSS_SELECTOR,
-                '.arco-modal-close-btn, .arco-modal-close, [class*="close"]',
-            )
-            self.browser.execute_script("arguments[0].click();", close_btn)
-            time.sleep(0.5)
-        except Exception:
-            pass
-
-        # 强制移除所有可能的遮挡层
-        self.browser.execute_script("""
-            document.querySelectorAll(
-                '.arco-modal-wrapper, .arco-modal-mask, .arco-modal, .arco-modal-container'
-            ).forEach(m => m.remove());
-            document.body.style.overflow = '';
-        """)
-
-    def login(self):
-        # 直接访问登录页面
-        self.browser.get("https://akile.ai/login")
-        self.browser.maximize_window()
+        # ── 登录 ──
+        browser.get("https://akile.ai/login")
+        browser.maximize_window()
         time.sleep(2)
+        dismiss_dialogs(browser)
 
-        # 关闭可能出现的弹窗
-        self._dismiss_dialogs()
-
-        # 键入邮箱和密码
         try:
-            email_input = WebDriverWait(self.browser, 10).until(
+            email_input = WebDriverWait(browser, 10).until(
                 EC.element_to_be_clickable(
                     (By.CSS_SELECTOR, 'input[placeholder*="邮箱"]')
                 )
             )
-            email_input.send_keys(self.email)
-            password_input = WebDriverWait(self.browser, 10).until(
+            email_input.send_keys(email)
+            password_input = WebDriverWait(browser, 10).until(
                 EC.element_to_be_clickable(
                     (By.CSS_SELECTOR, 'input[placeholder*="密码"]')
                 )
             )
-            password_input.send_keys(self.password)
+            password_input.send_keys(password)
         except TimeoutException as e:
-            self.browser.save_screenshot("邮箱.png")
-            print(f"邮箱或密码输入框没有加载出来: {e}")
-            msg = f"邮箱或密码输入框没有加载出来: {e}\n签到失败"
-            Notice.serverJ(self.push_key, "Akile签到", msg)
-            sys.exit(1)
+            browser.save_screenshot(f"login_error_{email.replace('@','_')}.png")
+            msg = f"[{email}] 邮箱或密码输入框没有加载出来: {e}"
+            print(msg)
+            Notice.serverJ(push_key, "Akile签到", msg)
+            return msg
 
         try:
-            submit_button = WebDriverWait(self.browser, 10).until(
+            submit_button = WebDriverWait(browser, 10).until(
                 EC.element_to_be_clickable(
                     (By.CSS_SELECTOR, 'form button[type="submit"], form .arco-btn-primary')
                 )
             )
             submit_button.click()
         except TimeoutException as e:
-            print(f"登录按钮没有加载出来: {e}")
-            msg = f"登录按钮没有加载出来: {e}\n签到失败"
-            Notice.serverJ(self.push_key, "Akile签到", msg)
-            sys.exit(1)
+            msg = f"[{email}] 登录按钮没有加载出来: {e}"
+            print(msg)
+            Notice.serverJ(push_key, "Akile签到", msg)
+            return msg
 
-    def _get_ak_coins(self):
-        """获取当前AK币数量"""
+        time.sleep(3)
+
+        # ── 签到 ──
+        browser.get("https://akile.ai/console/ak-coin-shop")
+        time.sleep(5)
+        dismiss_dialogs(browser)
+
+        prev_points = get_ak_coins(browser)
+        print(f"[{email}] 当前AK币: {prev_points}")
+
         try:
-            element = self.browser.find_element(By.CSS_SELECTOR, '.coin-balance-value')
-            text = element.text.strip()
-            return int(re.search(r'(\d+)', text).group(1))
-        except Exception:
-            return -1
-
-    # 签到主逻辑
-    def check_in(self):
-        checkin_page = "https://akile.ai/console/ak-coin-shop"
-        self.browser.get(checkin_page)
-        time.sleep(5)  # 增加等待时间
-
-        # 关闭可能出现的弹窗
-        self._dismiss_dialogs()
-
-        # 签到前的积分
-        prev_points_num = self._get_ak_coins()
-        print(f"当前AK币: {prev_points_num}")
-
-        # 尝试签到 - 使用更简单的选择器
-        try:
-            # 等待页面加载完成
-            checkin_button = WebDriverWait(self.browser, 15).until(
+            checkin_button = WebDriverWait(browser, 15).until(
                 EC.element_to_be_clickable(
                     (By.XPATH, '//button[contains(., "每日签到")]')
                 )
             )
-            print("找到签到按钮，正在点击...")
-            self.browser.execute_script("arguments[0].click();", checkin_button)
-            time.sleep(3)  # 防止点击签到动作未发出
+            print(f"[{email}] 找到签到按钮，正在点击...")
+            browser.execute_script("arguments[0].click();", checkin_button)
+            time.sleep(3)
 
-            # 检查签到结果
-            cur_points_num = self._get_ak_coins()
-
-            if prev_points_num == -1:
-                msg = f"签到成功, 当前有{cur_points_num}个AK币"
+            cur_points = get_ak_coins(browser)
+            if prev_points == -1:
+                result_msg = f"[{email}] 签到成功, 当前有{cur_points}个AK币"
             else:
-                gain = cur_points_num - prev_points_num if cur_points_num > 0 else 0
-                msg = f"签到成功, 获得{gain}个AK币, 当前有{cur_points_num}个AK币"
-
-            print(msg)
-            Notice.serverJ(self.push_key, "Akile签到", msg)
-            sys.exit(0)
+                gain = cur_points - prev_points if cur_points > 0 else 0
+                result_msg = f"[{email}] 签到成功, 获得{gain}个AK币, 当前有{cur_points}个AK币"
 
         except TimeoutException:
-            print("未找到签到按钮，检查是否已签到...")
-            # 签到按钮没有加载出来，检查是否已经签到过
+            print(f"[{email}] 未找到签到按钮，检查是否已签到...")
             try:
-                self.browser.find_element(
-                    By.XPATH, '//button[contains(., "已签到")]'
-                )
-                msg = f"今日已签到, 现在有{prev_points_num}AK币"
-                print(msg)
-                Notice.serverJ(self.push_key, "Akile签到", msg)
-                sys.exit(0)
+                browser.find_element(By.XPATH, '//button[contains(., "已签到")]')
+                result_msg = f"[{email}] 今日已签到, 现在有{prev_points}AK币"
             except Exception as e:
-                print(f"查找已签到按钮失败: {e}")
-                # 保存截图用于调试
-                self.browser.save_screenshot("debug.png")
-                msg = "签到按钮和已签到按钮都无法加载出来, 可能是网络原因, 可以等待一会再执行脚本"
-                print(msg)
-                Notice.serverJ(self.push_key, "Akile签到", msg)
-                sys.exit(1)
+                browser.save_screenshot(f"debug_{email.replace('@','_')}.png")
+                result_msg = f"[{email}] 签到按钮和已签到按钮都无法加载出来: {e}"
+                print(result_msg)
+                Notice.serverJ(push_key, "Akile签到", result_msg)
+                return result_msg
 
-    def __del__(self):
-        if self.browser:
-            self.browser.quit()
+        print(result_msg)
+        Notice.serverJ(push_key, "Akile签到", result_msg)
+        return result_msg
+
+    except Exception as e:
+        result_msg = f"[{email}] 签到异常: {e}"
+        print(result_msg)
+        Notice.serverJ(push_key, "Akile签到", result_msg)
+        return result_msg
+    finally:
+        if browser:
+            try:
+                browser.quit()
+            except Exception:
+                pass
+
+
+def load_accounts():
+    """加载账号列表。优先级：AKILE_ACCOUNTS JSON > AKILE_EMAIL/PASSWORD 单账号 > config.ini"""
+    # 方式1: AKILE_ACCOUNTS JSON 环境变量（多账号）
+    accounts_json = os.getenv("AKILE_ACCOUNTS", "").strip()
+    if accounts_json:
+        try:
+            accounts = json.loads(accounts_json)
+            if isinstance(accounts, list) and len(accounts) > 0:
+                return accounts
+        except json.JSONDecodeError as e:
+            print(f"AKILE_ACCOUNTS JSON 解析失败: {e}，回退到单账号模式")
+
+    # 方式2: 单账号环境变量
+    email = os.getenv("AKILE_EMAIL", "").strip()
+    password = os.getenv("AKILE_PASSWORD", "").strip()
+    push_key = os.getenv("AKILE_PUSH_KEY", "").strip()
+
+    if email and password:
+        return [{"email": email, "password": password, "push_key": push_key}]
+
+    # 方式3: config.ini 配置文件
+    try:
+        config = configparser.ConfigParser()
+        config.read("config.ini", encoding="utf-8")
+        email = config.get("akile", "email")
+        password = config.get("akile", "password")
+        push_key = config.get("akile", "push_key", fallback="")
+        return [{"email": email, "password": password, "push_key": push_key}]
+    except Exception as e:
+        print(f"读取 config.ini 失败: {e}")
+        print("请在环境变量 AKILE_ACCOUNTS 或 AKILE_EMAIL/AKILE_PASSWORD 中配置账号")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    akile = AkileCheckin()
-    try:
-        akile.login()
-        time.sleep(3)  # 防止执行太快导致需要二次登录
-        akile.check_in()
-    finally:
-        if akile.browser:
-            akile.browser.quit()
+    accounts = load_accounts()
+    print(f"共加载 {len(accounts)} 个账号，开始签到...")
+
+    results = []
+    for i, acct in enumerate(accounts):
+        email = acct.get("email", "")
+        password = acct.get("password", "")
+        push_key = acct.get("push_key", os.getenv("AKILE_PUSH_KEY", "").strip())
+
+        if not email or not password:
+            print(f"账号 {i+1} 缺少 email 或 password，跳过")
+            continue
+
+        print(f"\n{'='*50}")
+        print(f"▶ 账号 {i+1}/{len(accounts)}: {email}")
+        print(f"{'='*50}")
+        result = run_single_account(email, password, push_key)
+        results.append(result)
+
+    print(f"\n{'='*50}")
+    print("全部签到完成！")
+    for r in results:
+        print(f"  {r}")
